@@ -1,19 +1,133 @@
-const API_BASE = 'https://info-view-backend.vercel.app'; // 'http://localhost:5000'; //
+const API_BASE = 'http://localhost:5000';
+
+// ─── TTS: browser built-in (free, no OpenAI cost) ────────────────────────────
+function speakQuestion(question) {
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(question);
+        utterance.rate = 0.95;
+        window.speechSynthesis.speak(utterance);
+    }
+}
+
+// ─── STT: audio recording → Whisper API (via backend) ───────────────────────
+let audioRecorder = null;       // dedicated MediaRecorder for answer audio
+let audioChunks = [];
+let isRecording = false;
+
+// Separate audio-only stream for Whisper (we already have video via recordedStream)
+let audioStream = null;
+
+async function startAudioRecorder() {
+    // Reuse the existing recorded stream's audio tracks if available,
+    // otherwise request a fresh audio-only stream.
+    try {
+        if (recordedStream) {
+            const audioTracks = recordedStream.getAudioTracks();
+            if (audioTracks.length > 0) {
+                audioStream = new MediaStream(audioTracks);
+            }
+        }
+        if (!audioStream) {
+            audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+    } catch (err) {
+        console.error('Cannot access microphone:', err);
+        showError('Microphone access denied');
+    }
+}
+
+function startAnswerRecording() {
+    if (!audioStream) {
+        console.error('Audio stream not ready');
+        return;
+    }
+    audioChunks = [];
+    audioRecorder = new MediaRecorder(audioStream);
+    audioRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+    };
+    audioRecorder.start();
+    isRecording = true;
+
+    document.getElementById('micButton').classList.add('listening');
+    document.getElementById('micStatus').textContent = 'Recording...';
+    document.getElementById('transcriptionDisplay').textContent = 'Speak now...';
+    document.getElementById('nextBtn').disabled = true;
+    console.log('🎙️ Answer recording started');
+}
+
+async function stopAnswerRecording() {
+    if (!audioRecorder || audioRecorder.state === 'inactive') return;
+
+    return new Promise((resolve) => {
+        audioRecorder.onstop = async () => {
+            isRecording = false;
+            document.getElementById('micButton').classList.remove('listening');
+            document.getElementById('micStatus').textContent = 'Transcribing...';
+
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            const transcript = await transcribeWithWhisper(audioBlob);
+
+            document.getElementById('transcriptionDisplay').textContent =
+                transcript || '(No speech detected)';
+            document.getElementById('micStatus').textContent = 'Click to Re-record';
+
+            if (transcript) {
+                currentTranscript = transcript;
+                document.getElementById('nextBtn').disabled = false;
+            }
+            resolve(transcript);
+        };
+        audioRecorder.stop();
+    });
+}
+
+async function transcribeWithWhisper(audioBlob) {
+    try {
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'answer.webm');
+
+        const response = await fetch(`${API_BASE}/api/interviews/transcribe`, {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) {
+            console.error('Whisper API error:', await response.text());
+            return '';
+        }
+
+        const data = await response.json();
+        console.log('✅ Whisper transcript:', data.transcript);
+        return data.transcript || '';
+    } catch (err) {
+        console.error('Transcription request failed:', err);
+        return '';
+    }
+}
+
+function toggleListening() {
+    if (isRecording) {
+        stopAnswerRecording();
+    } else {
+        currentTranscript = '';
+        startAnswerRecording();
+    }
+}
+
+// ─── Everything below is unchanged from original ─────────────────────────────
 
 let interviewData = null;
 let interviewStartTime = null;
 let mediaRecorder = null;
-let audioRecorder = null;
 let recordedChunks = [];
-let audioChunks = [];
-let isListening = false;
 let currentTranscript = '';
 let timerInterval = null;
 let videoBlob = null;
 let recordedStream = null;
 let waitingInterval = null;
 let currentQuestion = '';
-let audioStream = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
     const params = new URLSearchParams(window.location.search);
@@ -30,8 +144,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         console.log('[DEBUG] Status Response:', statusData);
 
-        // ✅ CRITICAL FIX: Check for already-used interviews FIRST
-        // These should be checked BEFORE checking time window
         if (statusData.status === "completed") {
             document.body.innerHTML = `
                 <div style="height:100vh;display:flex;align-items:center;justify-content:center;
@@ -67,7 +179,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // Now check time-based status (waiting, expired, live)
         if (statusData.status === "waiting") {
             showWaitingScreen(new Date(statusData.start_time), statusData.start_time_ist);
             return;
@@ -105,7 +216,8 @@ async function initializeInterview() {
     document.getElementById('waitingScreen').classList.remove('active');
     document.getElementById('interviewSection').classList.add('active');
 
-    await startCamera();
+    await startCamera();                // sets up recordedStream (video + audio)
+    await startAudioRecorder();         // prepares audio stream for Whisper
     await generateQuestions();
     interviewStartTime = Date.now();
     startInterviewTimer();
@@ -115,13 +227,11 @@ async function initializeInterview() {
 function showWaitingScreen(startTime, startTimeIST) {
     document.getElementById('waitingScreen').classList.add('active');
     if (startTimeIST) {
-        // Update the scheduled time display with coral color
         const timeDisplay = document.getElementById('scheduledTimeDisplay');
         timeDisplay.textContent = startTimeIST;
         timeDisplay.style.color = '#F06767';
         timeDisplay.style.fontWeight = '700';
     }
-    
     updateWaitingCountdown(startTime);
     waitingInterval = setInterval(() => {
         const now = new Date();
@@ -146,9 +256,8 @@ function updateWaitingCountdown(startTime) {
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
     const seconds = Math.floor((diff % (1000 * 60)) / 1000);
 
-    // Update countdown with coral color theme
     const countdownElement = document.getElementById('waitingCountdown');
-    countdownElement.textContent = 
+    countdownElement.textContent =
         `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
     countdownElement.style.color = '#FFFFFF';
     countdownElement.style.textShadow = '0 0 30px rgba(240, 103, 103, 0.4)';
@@ -164,9 +273,6 @@ async function startCamera() {
         recordedStream = stream;
         document.getElementById('cameraFeed').srcObject = stream;
         startRecording(stream);
-        
-        // Get audio stream for transcription
-        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (error) {
         showError('Camera access denied');
     }
@@ -176,9 +282,7 @@ function startRecording(stream) {
     try {
         mediaRecorder = new MediaRecorder(stream);
         mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                recordedChunks.push(event.data);
-            }
+            if (event.data.size > 0) recordedChunks.push(event.data);
         };
         mediaRecorder.onstop = () => {
             videoBlob = new Blob(recordedChunks, { type: 'video/webm' });
@@ -189,108 +293,19 @@ function startRecording(stream) {
     }
 }
 
-async function toggleListening() {
-    if (isListening) {
-        // Stop recording
-        stopAudioRecording();
-    } else {
-        // Start recording
-        startAudioRecording();
-    }
-}
-
-function startAudioRecording() {
-    try {
-        audioChunks = [];
-        currentTranscript = '';
-        
-        audioRecorder = new MediaRecorder(audioStream, {
-            mimeType: 'audio/webm'
-        });
-        
-        audioRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-                audioChunks.push(event.data);
-            }
-        };
-        
-        audioRecorder.onstop = async () => {
-            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-            await transcribeAudio(audioBlob);
-        };
-        
-        audioRecorder.start();
-        isListening = true;
-        
-        document.getElementById('micButton').classList.add('listening');
-        document.getElementById('micStatus').textContent = 'Recording...';
-        document.getElementById('transcriptionDisplay').textContent = 'Recording your answer...';
-        
-        console.log('[DEBUG] Audio recording started');
-    } catch (error) {
-        console.error('[ERROR] Failed to start audio recording:', error);
-        showError('Failed to start audio recording');
-    }
-}
-
-function stopAudioRecording() {
-    if (audioRecorder && audioRecorder.state === 'recording') {
-        audioRecorder.stop();
-        isListening = false;
-        
-        document.getElementById('micButton').classList.remove('listening');
-        document.getElementById('micStatus').textContent = 'Processing...';
-        
-        console.log('[DEBUG] Audio recording stopped');
-    }
-}
-
-async function transcribeAudio(audioBlob) {
-    try {
-        document.getElementById('transcriptionDisplay').textContent = 'Transcribing...';
-        
-        const formData = new FormData();
-        formData.append('audio', audioBlob, 'answer.webm');
-        
-        const response = await fetch(`${API_BASE}/api/interviews/transcribe-audio/${interviewData.interviewId}`, {
-            method: 'POST',
-            body: formData
-        });
-        
-        const result = await response.json();
-        
-        if (result.status === 'success') {
-            currentTranscript = result.text;
-            document.getElementById('transcriptionDisplay').textContent = currentTranscript;
-            document.getElementById('nextBtn').disabled = false;
-            document.getElementById('micStatus').textContent = 'Click to Speak';
-            
-            console.log('[DEBUG] Transcription successful:', currentTranscript);
-        } else {
-            throw new Error(result.error || 'Transcription failed');
-        }
-    } catch (error) {
-        console.error('[ERROR] Transcription failed:', error);
-        document.getElementById('transcriptionDisplay').textContent = 'Transcription failed. Please try again.';
-        document.getElementById('micStatus').textContent = 'Click to Speak';
-    }
-}
-
 async function generateQuestions() {
     try {
         const response = await fetch(`${API_BASE}/api/interviews/generate-questions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
                 jd: interviewData.jobDescription,
                 interview_id: interviewData.interviewId
             })
         });
         const result = await response.json();
-        
         console.log('[DEBUG] Generate Questions Response:', result);
-        
-        // ✅ Handle case where interview was already started
+
         if (result.status === "already_started") {
             document.body.innerHTML = `
                 <div style="height:100vh;display:flex;align-items:center;justify-content:center;
@@ -309,8 +324,7 @@ async function generateQuestions() {
             `;
             return;
         }
-        
-        // ✅ Handle case where interview was already completed
+
         if (result.status === "completed") {
             document.body.innerHTML = `
                 <div style="height:100vh;display:flex;align-items:center;justify-content:center;
@@ -349,71 +363,31 @@ async function loadNextQuestion() {
         }
 
         currentQuestion = data.question;
-        document.getElementById('questionLabel').textContent = `Question ${data.questionNumber} of ${data.totalQuestions}`;
+        document.getElementById('questionLabel').textContent =
+            `Question ${data.questionNumber} of ${data.totalQuestions}`;
         document.getElementById('questionText').textContent = currentQuestion;
-        document.getElementById('transcriptionDisplay').textContent = 'Click microphone and speak...';
+        document.getElementById('transcriptionDisplay').textContent =
+            'Click microphone and speak...';
         document.getElementById('nextBtn').disabled = true;
-        document.getElementById('micStatus').textContent = 'Click to Speak';
         currentTranscript = '';
 
-        // Use OpenAI TTS to speak the question
-        await speakQuestionWithTTS(currentQuestion);
+        // ✅ TTS: free browser speechSynthesis — no OpenAI call
+        speakQuestion(currentQuestion);
     } catch (error) {
         console.error('[ERROR] Load next question failed:', error);
         showError('Failed to load question');
     }
 }
 
-async function speakQuestionWithTTS(question) {
-    try {
-        console.log('[DEBUG] Generating TTS for question:', question);
-        
-        const response = await fetch(`${API_BASE}/api/interviews/text-to-speech`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: question })
-        });
-        
-        if (!response.ok) {
-            throw new Error('TTS generation failed');
-        }
-        
-        // Get audio blob
-        const audioBlob = await response.blob();
-        const audioUrl = URL.createObjectURL(audioBlob);
-        
-        // Play audio
-        const audio = new Audio(audioUrl);
-        audio.play();
-        
-        console.log('[DEBUG] TTS audio playing');
-        
-        // Clean up URL after audio finishes
-        audio.onended = () => {
-            URL.revokeObjectURL(audioUrl);
-            console.log('[DEBUG] TTS audio finished');
-        };
-        
-    } catch (error) {
-        console.error('[ERROR] TTS failed:', error);
-        // Fallback to browser TTS if OpenAI TTS fails
-        fallbackSpeakQuestion(question);
-    }
-}
-
-function fallbackSpeakQuestion(question) {
-    if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(question);
-        utterance.rate = 0.95;
-        window.speechSynthesis.speak(utterance);
-        console.log('[DEBUG] Using fallback browser TTS');
-    }
-}
-
 async function submitAnswer() {
     try {
+        // Stop recording if still active, wait for transcript
+        if (isRecording) {
+            await stopAnswerRecording();
+        }
+
         const answer = currentTranscript.trim() || 'No answer provided';
+
         await fetch(`${API_BASE}/api/interviews/submit-answer/${interviewData.interviewId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -422,11 +396,7 @@ async function submitAnswer() {
                 answer: answer
             })
         });
-        
-        if (isListening) {
-            stopAudioRecording();
-        }
-        
+
         await loadNextQuestion();
     } catch (error) {
         console.error('[ERROR] Submit answer failed:', error);
@@ -434,7 +404,7 @@ async function submitAnswer() {
 }
 
 async function endInterview() {
-    if (isListening) stopAudioRecording();
+    if (isRecording) await stopAnswerRecording();
     if (recordedStream) recordedStream.getTracks().forEach(track => track.stop());
     if (audioStream) audioStream.getTracks().forEach(track => track.stop());
     if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
@@ -443,15 +413,12 @@ async function endInterview() {
     document.getElementById('interviewSection').classList.remove('active');
     document.getElementById('feedbackSection').classList.add('active');
 
-    // Wait for recording to finish
     await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Upload video
+
     if (videoBlob) {
         await uploadVideo();
     }
 
-    // Get evaluation
     await getEvaluation();
 }
 
@@ -462,10 +429,10 @@ async function uploadVideo() {
         formData.append('candidate_name', interviewData.candidateName);
         formData.append('candidate_email', interviewData.candidateEmail);
 
-        const response = await fetch(`${API_BASE}/api/interviews/upload-video/${interviewData.interviewId}`, {
-            method: 'POST',
-            body: formData
-        });
+        const response = await fetch(
+            `${API_BASE}/api/interviews/upload-video/${interviewData.interviewId}`,
+            { method: 'POST', body: formData }
+        );
         const result = await response.json();
         console.log('Video upload:', result.status);
     } catch (error) {
@@ -475,14 +442,15 @@ async function uploadVideo() {
 
 async function getEvaluation() {
     try {
-        // Update loading spinner with coral theme
         const loadingDiv = document.getElementById('loadingFeedback');
         loadingDiv.innerHTML = `
             <div class="loading-spinner"></div>
             <p style="font-weight: 600; color: #777777;">Generating AI Evaluation...</p>
         `;
-        
-        const response = await fetch(`${API_BASE}/api/interviews/evaluate/${interviewData.interviewId}`);
+
+        const response = await fetch(
+            `${API_BASE}/api/interviews/evaluate/${interviewData.interviewId}`
+        );
         const evaluation = await response.json();
         displayFeedback(evaluation);
     } catch (error) {
@@ -496,15 +464,18 @@ function displayFeedback(evaluation) {
     document.getElementById('loadingFeedback').style.display = 'none';
     document.getElementById('feedbackContent').style.display = 'block';
 
-    // Update scores with coral theme
-    document.getElementById('technicalScore').textContent = `${evaluation.technical_score}/10`;
-    document.getElementById('communicationScore').textContent = `${evaluation.communication_score}/10`;
-    document.getElementById('overallScore').textContent = `${evaluation.overall_score}/10`;
+    document.getElementById('technicalScore').textContent =
+        `${evaluation.technical_score}/10`;
+    document.getElementById('communicationScore').textContent =
+        `${evaluation.communication_score}/10`;
+    document.getElementById('overallScore').textContent =
+        `${evaluation.overall_score}/10`;
 
     const recBox = document.getElementById('recommendationBox');
     const recType = evaluation.recommendation.toLowerCase();
     recBox.className = `recommendation ${recType}`;
-    recBox.innerHTML = `<h3>Recommendation: ${evaluation.recommendation}</h3><p>${evaluation.feedback}</p>`;
+    recBox.innerHTML =
+        `<h3>Recommendation: ${evaluation.recommendation}</h3><p>${evaluation.feedback}</p>`;
 
     document.getElementById('feedbackText').textContent = evaluation.feedback;
 }
