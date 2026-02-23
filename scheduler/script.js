@@ -1,4 +1,4 @@
-const API_BASE ='http://localhost:5000'; // 'https://info-view-backend.vercel.app'; //
+const API_BASE ='https://info-view-backend-wblb.vercel.app'; //'http://localhost:5000'; // 
 
 function istToUTC(dateString) {
     return new Date(dateString).toISOString();

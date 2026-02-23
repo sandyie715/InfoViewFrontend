@@ -1,0 +1,204 @@
+<!-- FILE: frontend/dashboard/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InfoView Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- ── LOGIN ── -->
+    <div id="loginScreen" class="login-screen">
+        <div class="login-bg">
+            <div class="bg-orb orb1"></div>
+            <div class="bg-orb orb2"></div>
+            <div class="bg-orb orb3"></div>
+        </div>
+        <div class="login-card">
+            <div class="login-brand">
+                <div class="brand-icon">🎯</div>
+                <h1>InfoView</h1>
+                <p>Recruiter Dashboard</p>
+            </div>
+            <div id="loginError" class="login-error"></div>
+            <div class="form-group">
+                <label>Username</label>
+                <input type="text" id="loginUser" placeholder="Enter username" autocomplete="off">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="loginPass" placeholder="Enter password"
+                    onkeydown="if(event.key==='Enter') doLogin()">
+            </div>
+            <button class="login-btn" onclick="doLogin()">Sign In →</button>
+        </div>
+    </div>
+
+    <!-- ── DASHBOARD ── -->
+    <div id="dashboardScreen" class="dashboard hidden">
+
+        <!-- Sidebar with toggle -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-top">
+                <div class="sidebar-brand">
+                    <span class="brand-icon">🎯</span>
+                    <span class="brand-text">InfoView</span>
+                </div>
+                <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" title="Collapse sidebar">‹</button>
+            </div>
+            <nav class="sidebar-nav">
+                <a class="nav-item active" onclick="showTab('interviews', this)">
+                    <span class="nav-icon">📋</span>
+                    <span class="nav-label">All Interviews</span>
+                </a>
+                <a class="nav-item" onclick="showTab('stats', this)">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-label">Statistics</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button class="logout-btn" onclick="doLogout()">
+                    <span class="nav-icon">⇠</span>
+                    <span class="nav-label">Logout</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main -->
+        <main class="main-content" id="mainContent">
+
+            <!-- Sticky top bar (always visible) -->
+            <div class="sticky-topbar">
+                <div class="topbar-left">
+                    <h2 id="pageTitle">All Interviews</h2>
+                    <p id="pageSubtitle">Manage and review all candidate sessions</p>
+                </div>
+                <div class="topbar-right">
+                    <button class="refresh-btn" onclick="loadInterviews()">↻ Refresh</button>
+                    <a href="../scheduler/index.html" class="schedule-btn" target="_blank">+ Schedule New</a>
+                </div>
+            </div>
+
+            <!-- Interviews Tab -->
+            <div id="tab-interviews" class="tab-content active">
+
+                <!-- Filter bar (always visible below topbar) -->
+                <div class="filter-bar">
+                    <input type="text" id="searchInput"
+                        placeholder="🔍  Search by name or email…"
+                        oninput="filterInterviews()">
+                    <select id="statusFilter" onchange="filterInterviews()">
+                        <option value="">All Statuses</option>
+                        <option value="scheduled">Scheduled</option>
+                        <option value="started">Started</option>
+                        <option value="in_progress">In Progress</option>
+                        <option value="completed">Completed</option>
+                        <option value="expired">Expired</option>
+                    </select>
+                </div>
+
+                <div id="loadingState" class="loading-state">
+                    <div class="spinner"></div>
+                    <p>Loading interviews…</p>
+                </div>
+                <div id="emptyState" class="empty-state hidden">
+                    <div class="empty-icon">📭</div>
+                    <h3>No interviews found</h3>
+                    <p>Schedule one to get started</p>
+                </div>
+
+                <!-- Table wrapper — fixed height, inner scroll -->
+                <div id="interviewsTable" class="table-wrap hidden">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Candidate</th>
+                                <th>Email</th>
+                                <th>Job Description</th>
+                                <th>Start</th>
+                                <th>End</th>
+                                <th>Status</th>
+                                <th>Score</th>
+                                <th>Recommendation</th>
+                                <th>Feedback</th>
+                               <!-- <th>Action</th> -->
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Stats Tab -->
+            <div id="tab-stats" class="tab-content">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">📅</div>
+                        <div class="stat-val" id="statTotal">—</div>
+                        <div class="stat-label">Total Scheduled</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">✅</div>
+                        <div class="stat-val" id="statCompleted">—</div>
+                        <div class="stat-label">Completed</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">🔴</div>
+                        <div class="stat-val" id="statInProgress">—</div>
+                        <div class="stat-label">In Progress</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">⏳</div>
+                        <div class="stat-val" id="statWaiting">—</div>
+                        <div class="stat-label">Upcoming</div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">⭐</div>
+                        <div class="stat-val" id="statAvgScore">—</div>
+                        <div class="stat-label">Avg Score</div>
+                    </div> 
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">👍</div>
+                        <div class="stat-val" id="statYesRate">—</div>
+                        <div class="stat-label">"Yes" Rate</div>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- ── READ MORE MODAL ── -->
+    <div id="readMoreModal" class="modal-overlay hidden"
+        onclick="if(event.target===this) closeReadMore()">
+        <div class="modal-card readmore-card">
+            <div class="modal-top">
+                <h3 id="readMoreTitle">Details</h3>
+                <button class="modal-close" onclick="closeReadMore()">✕</button>
+            </div>
+            <div id="readMoreBody" class="readmore-body"></div>
+        </div>
+    </div>
+
+    <!-- ── DELETE MODAL ── 
+    <div id="deleteModal" class="modal-overlay hidden"
+        onclick="if(event.target===this) closeDeleteModal()">
+        <div class="modal-card delete-card">
+            <div class="modal-icon">🗑️</div>
+            <h3>Delete Interview?</h3>
+            <p>This will permanently remove all data for this candidate and cannot be undone.</p>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="closeDeleteModal()">Cancel</button>
+                <button class="btn-delete" onclick="confirmDelete()">Delete</button>
+            </div>
+        </div> 
+    </div> -->
+
+    <script src="script.js"></script>
+</body>
+</html>
