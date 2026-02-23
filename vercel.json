@@ -1,7 +1,0 @@
-{
-  "cleanUrls": true,
-  "routes": [
-    { "handle": "filesystem" },
-    { "src": "/.*", "dest": "/dashboard/index.html" }
-  ]
-}
